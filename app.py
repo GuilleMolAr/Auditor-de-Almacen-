@@ -16,7 +16,7 @@ from pathlib import Path
 
 st.set_page_config(page_title="Auditor de Almacén", layout="wide")
 
-RUTA_TABLAS_CONTROL = Path("control_data/tablas_control.xlsx")
+RUTA_TABLAS_CONTROL = Path("tablas_control.xlsx")
 #(r"C:/Users/gmolar/Documents/Python/Auditor_de_almacen/control_data/tablas_control.xlsx")
 
 # --------------------------------------------------
@@ -259,3 +259,4 @@ if archivo:
             st.dataframe(df_op, use_container_width=True)
             st.markdown("### Resumen operativo")
             st.write(df_op["ESTADO_OP"].value_counts())
+
