@@ -6,131 +6,196 @@
 
 import streamlit as st
 import pandas as pd
-import os
 from bs4 import BeautifulSoup
+from pathlib import Path
+from io import StringIO
 
-# ----------------------------------
-# CONFIG
-# ----------------------------------
-st.set_page_config(page_title="Auditor de Almacén", layout="wide")
+# --------------------------------------------------
+# CONFIGURACIÓN GENERAL
+# --------------------------------------------------
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TABLAS_CONTROL_PATH = os.path.join(BASE_DIR, "tablas_control.xlsx")
+st.set_page_config(
+    page_title="Auditor de Almacén",
+    layout="wide"
+)
 
-# Buscar automáticamente el MHTML en la carpeta
-def buscar_mhtml_en_directorio(base_dir):
-    for file in os.listdir(base_dir):
-        if file.lower().endswith(".mhtml"):
-            return os.path.join(base_dir, file)
-    return None
+BASE_PATH = Path(__file__).parent
+TABLAS_CONTROL_PATH = BASE_PATH / "tablas_control.xlsx"
+MHTML_DEFAULT_PATH = BASE_PATH / "auditor de posiciones.MHTML"
 
-MHTML_DEFAULT_PATH = buscar_mhtml_en_directorio(BASE_DIR)
+# --------------------------------------------------
+# UTILIDADES
+# --------------------------------------------------
 
-# ----------------------------------
-# FUNCIONES
-# ----------------------------------
-def leer_mhtml(path):
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        soup = BeautifulSoup(f, "html.parser")
+def normalizar_columnas(df):
+    df.columns = (
+        df.columns
+        .str.strip()
+        .str.upper()
+        .str.replace(" ", "_")
+        .str.replace("°", "", regex=False)
+    )
+    return df
 
-    tables = soup.find_all("table")
-    if not tables:
-        st.error("No se encontraron tablas en el archivo MHTML")
-        st.stop()
+# --------------------------------------------------
+# CARGA TABLAS DE CONTROL
+# --------------------------------------------------
 
-    return pd.read_html(str(tables[0]))[0]
-
-
+@st.cache_data
 def cargar_tablas_control():
     tp_almacen = pd.read_excel(
         TABLAS_CONTROL_PATH,
-        sheet_name="TP_ALMACEN"
+        sheet_name="TP_ALMACEN",
+        dtype=str
     )
 
     jerarquia = pd.read_excel(
         TABLAS_CONTROL_PATH,
-        sheet_name="JERARQUIA"
+        sheet_name="JERARQUIA",
+        dtype=str
     )
 
-    tp_almacen["Tipo almacén"] = tp_almacen["Tipo almacén"].astype(str).str.zfill(3)
-    jerarquia["Jerarquia"] = jerarquia["Jerarquia"].astype(str).str.zfill(2)
+    tp_almacen = normalizar_columnas(tp_almacen)
+    jerarquia = normalizar_columnas(jerarquia)
+
+    tp_almacen["N_ALMACEN"] = tp_almacen["N_ALMACEN"].astype(str).str.zfill(3)
+    jerarquia["JERARQUIA_N"] = jerarquia["JERARQUIA_N"].astype(str).str.zfill(2)
 
     return tp_almacen, jerarquia
 
+# --------------------------------------------------
+# LECTURA MHTML SAP
+# --------------------------------------------------
 
-def evaluar_normativa(row):
-    if row["ESTADO"] == 1:
-        return "Ubicación correcta según normativa"
-    if row["ESTADO"] == 6:
-        return "Ubicación válida pero no permitida para este material"
-    return "Ubicación no permitida según normativa"
+def leer_mhtml(path_or_file):
+    if hasattr(path_or_file, "read"):
+        content = path_or_file.read().decode("utf-8", errors="ignore")
+    else:
+        with open(path_or_file, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
 
+    soup = BeautifulSoup(content, "html.parser")
+    raw = StringIO(str(soup))
+    tablas = pd.read_html(raw, header=0)
 
-def sugerencia_correccion(row):
-    if row["ESTADO"] == 1:
-        return "No requiere corrección"
-    if row["ESTADO"] == 6:
-        return "Reubicar en posición compatible con el tipo de almacén"
-    return "Revisar jerarquía y tipo de almacén asignado"
+    for t in tablas:
+        t.columns = t.columns.astype(str).str.strip()
 
+        if (
+            any("material" in c.lower() for c in t.columns)
+            and any("ubic" in c.lower() for c in t.columns)
+            and any("almac" in c.lower() for c in t.columns)
+        ):
+            df = t.copy()
+            break
+    else:
+        raise ValueError("No se encontró una tabla válida SAP")
 
-# ----------------------------------
-# SIDEBAR
-# ----------------------------------
-st.sidebar.title("📂 Fuente de datos")
+    col_material = next(c for c in df.columns if "material" in c.lower())
+    col_ubicacion = next(c for c in df.columns if "ubic" in c.lower())
+    col_tipo = next(c for c in df.columns if "almac" in c.lower())
 
-uploaded_file = st.sidebar.file_uploader(
-    "Subir archivo MHTML actualizado",
-    type=["mhtml"]
-)
+    df = df.rename(columns={
+        col_material: "MATERIAL",
+        col_ubicacion: "UBICACION",
+        col_tipo: "TIPO_ALMACEN"
+    })
 
-# ----------------------------------
+    df["MATERIAL"] = df["MATERIAL"].astype(str).str.strip()
+    df["TIPO_ALMACEN"] = df["TIPO_ALMACEN"].astype(str).str.zfill(3)
+
+    return df
+
+# --------------------------------------------------
+# UI
+# --------------------------------------------------
+
+st.title("Auditor de Almacenamiento – SAP")
+st.caption("Auditoría normativa y operativa")
+
+with st.sidebar:
+    st.header("📂 Fuente de datos")
+
+    archivo_subido = st.file_uploader(
+        "Subir archivo SAP (.MHTML)",
+        type=["mhtml", "MHTML"]
+    )
+
+# --------------------------------------------------
 # CARGA DE DATOS
-# ----------------------------------
-if uploaded_file:
-    df = leer_mhtml(uploaded_file)
-elif MHTML_DEFAULT_PATH:
-    df = leer_mhtml(MHTML_DEFAULT_PATH)
-else:
-    st.error("No se encontró ningún archivo MHTML en el proyecto.")
-    st.stop()
+# --------------------------------------------------
 
 tp_almacen, jerarquia = cargar_tablas_control()
 
-# ----------------------------------
-# TRANSFORMACIONES
-# ----------------------------------
-df["Tipo almacén"] = df["Tipo almacén"].astype(str).str.zfill(3)
-df["Jerarquia"] = df["Jerarquia"].astype(str).str.zfill(2)
+if archivo_subido:
+    df = leer_mhtml(archivo_subido)
+    st.info("Usando archivo subido por el usuario")
+elif MHTML_DEFAULT_PATH.exists():
+    df = leer_mhtml(MHTML_DEFAULT_PATH)
+    st.info("Usando archivo MHTML por defecto del proyecto")
+else:
+    st.warning("No hay archivo MHTML disponible")
+    st.stop()
 
-df = df.merge(tp_almacen, how="left", on="Tipo almacén")
-df = df.merge(jerarquia, how="left", on="Jerarquia")
+# --------------------------------------------------
+# ENRIQUECIMIENTO DE DATOS
+# --------------------------------------------------
 
-df["OBSERVACION"] = df.apply(evaluar_normativa, axis=1)
-df["POSIBLE_CORRECCION"] = df.apply(sugerencia_correccion, axis=1)
+# Tipo de almacén → nombre
+df = df.merge(
+    tp_almacen,
+    how="left",
+    left_on="TIPO_ALMACEN",
+    right_on="N_ALMACEN"
+)
 
-# ----------------------------------
-# COLUMNAS FINALES
-# ----------------------------------
-COLUMNAS_FINALES = [
-    "Texto breve de material",
-    "Ubicacion",
-    "Tipo almacén",
-    "Tipo_Almacen",
-    "Jerarquia",
-    "Jerarquía nombre",
-    "ESTADO",
-    "OBSERVACION",
-    "POSIBLE_CORRECCION"
-]
+df.rename(columns={"NOMBRE": "TIPO_ALMACEN_NOMBRE"}, inplace=True)
+df.drop(columns=["N_ALMACEN"], inplace=True)
 
-df_final = df[COLUMNAS_FINALES]
+# Jerarquía (ejemplo: derivada del material si ya la tenés)
+if "JERARQUIA" in df.columns:
+    df["JERARQUIA"] = df["JERARQUIA"].astype(str).str.zfill(2)
 
-# ----------------------------------
-# UI
-# ----------------------------------
-st.title("📊 Auditoría normativa de almacén")
-st.dataframe(df_final, use_container_width=True)
+    df = df.merge(
+        jerarquia,
+        how="left",
+        left_on="JERARQUIA",
+        right_on="JERARQUIA_N"
+    )
+
+    df.rename(columns={"NOMBRE": "JERARQUIA_NOMBRE"}, inplace=True)
+    df.drop(columns=["JERARQUIA_N"], inplace=True)
+else:
+    df["JERARQUIA_NOMBRE"] = "No informada"
+
+# --------------------------------------------------
+# RESULTADO SIMULADO (placeholder de auditoría)
+# --------------------------------------------------
+
+df["ESTADO"] = "🟢"
+df["OBSERVACION"] = "Ubicación correcta según normativa"
+df["POSIBLE_CORRECCION"] = "-"
+
+# --------------------------------------------------
+# VISUALIZACIÓN
+# --------------------------------------------------
+
+st.dataframe(
+    df[
+        [
+            "MATERIAL",
+            "UBICACION",
+            "TIPO_ALMACEN",
+            "TIPO_ALMACEN_NOMBRE",
+            "JERARQUIA_NOMBRE",
+            "ESTADO",
+            "OBSERVACION",
+            "POSIBLE_CORRECCION"
+        ]
+    ],
+    width="stretch"
+)
+
 
 
 
