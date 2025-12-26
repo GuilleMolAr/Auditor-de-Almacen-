@@ -6,257 +6,144 @@
 
 import streamlit as st
 import pandas as pd
+import os
 from bs4 import BeautifulSoup
-from io import StringIO
-from pathlib import Path
 
-# --------------------------------------------------
-# CONFIGURACIÓN
-# --------------------------------------------------
-
+# ----------------------------------
+# CONFIG
+# ----------------------------------
 st.set_page_config(page_title="Auditor de Almacén", layout="wide")
 
-RUTA_TABLAS_CONTROL = Path("tablas_control.xlsx")
-#(r"C:/Users/gmolar/Documents/Python/Auditor_de_almacen/control_data/tablas_control.xlsx")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TABLAS_CONTROL_PATH = os.path.join(BASE_DIR, "tablas_control.xlsx")
+MHTML_DEFAULT_PATH = os.path.join(BASE_DIR, "auditoria_posiciones.MHTML")
 
-# --------------------------------------------------
-# CARGA TABLAS DE CONTROL
-# --------------------------------------------------
+# ----------------------------------
+# FUNCIONES
+# ----------------------------------
+def leer_mhtml(path):
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        soup = BeautifulSoup(f, "html.parser")
 
-@st.cache_data
+    tables = soup.find_all("table")
+    if not tables:
+        st.error("No se encontraron tablas en el archivo MHTML")
+        st.stop()
+
+    df = pd.read_html(str(tables[0]))[0]
+    return df
+
+
 def cargar_tablas_control():
-    maestro = pd.read_excel(
-        RUTA_TABLAS_CONTROL,
-        sheet_name="MAESTRO_MATERIALES",
-        dtype=str
+    tp_almacen = pd.read_excel(
+        TABLAS_CONTROL_PATH,
+        sheet_name="TP_ALMACEN"
     )
 
-    combinaciones = pd.read_excel(
-        RUTA_TABLAS_CONTROL,
-        sheet_name="COMBINACIONES",
-        dtype=str
+    jerarquia = pd.read_excel(
+        TABLAS_CONTROL_PATH,
+        sheet_name="JERARQUIA"
     )
 
-    mapeo = pd.read_excel(
-        RUTA_TABLAS_CONTROL,
-        sheet_name="MAPEO_POSICIONES",
-        dtype=str
-    )
+    # Normalizaciones
+    tp_almacen["Tipo almacén"] = tp_almacen["Tipo almacén"].astype(str).str.zfill(3)
+    jerarquia["Jerarquia"] = jerarquia["Jerarquia"].astype(str).str.zfill(2)
 
-    maestro["MATERIAL"] = maestro["MATERIAL"].astype(str).str.strip()
-    maestro["JERARQUIA"] = maestro["JERARQUIA"].astype(str).str.zfill(15)
-    maestro["IND TP ALM ENTRADA"] = maestro["IND TP ALM ENTRADA"].astype(str).str.zfill(3)
-
-    combinaciones["TP_ALMACEN"] = combinaciones["TP_ALMACEN"].astype(str).str.zfill(3)
-    combinaciones["JERRARQUIA"] = combinaciones["JERRARQUIA"].astype(str).str.zfill(15)
-
-    # Crear mapeo de Tipo_Almacen -> NOMBRE_ALMACEN
-    mapeo_almacenes = {}
-    if "TP_ALMACEN" in combinaciones.columns and "NOMBRE_ALMACEN" in combinaciones.columns:
-        mapeo_almacenes = dict(zip(
-            combinaciones["TP_ALMACEN"].str.zfill(3),
-            combinaciones["NOMBRE_ALMACEN"]
-        ))
-
-    return maestro, combinaciones, mapeo, mapeo_almacenes
-
-# --------------------------------------------------
-# LECTURA ARCHIVO SAP
-# --------------------------------------------------
-
-def cargar_mhtml(file):
-    content = file.read().decode("utf-8", errors="ignore")
-    soup = BeautifulSoup(content, "html.parser")
-
-    raw = StringIO(str(soup))
-    tablas = pd.read_html(raw, header=0)
-
-    def buscar_columna(cols, keywords):
-        cols_l = [str(c).lower() for c in cols]
-        for kw in keywords:
-            for i, c in enumerate(cols_l):
-                if kw in c:
-                    return cols[i]
-        return None
-
-    kw_material = ["material", "matnr"]
-    kw_ubicacion = ["ubic", "posición", "posicion", "location"]
-    kw_tipo = ["tipo", "almac"]
-
-    candidata = None
-
-    for t in tablas:
-        if isinstance(t.columns, pd.MultiIndex):
-            t.columns = [
-                " ".join([str(x) for x in col if x]).strip()
-                for col in t.columns.values
-            ]
-        else:
-            t.columns = t.columns.astype(str).str.strip()
-
-        cols = list(t.columns)
-
-        if (
-            buscar_columna(cols, kw_material)
-            and buscar_columna(cols, kw_ubicacion)
-            and buscar_columna(cols, kw_tipo)
-        ):
-            candidata = t.copy()
-            break
-
-    if candidata is None:
-        raise ValueError("No se encontró una tabla SAP válida")
-
-    cols = list(candidata.columns)
-    col_material = buscar_columna(cols, kw_material)
-    col_ubicacion = buscar_columna(cols, kw_ubicacion)
-    col_tipo = buscar_columna(cols, kw_tipo)
-
-    candidata = candidata.rename(columns={
-        col_material: "Material",
-        col_ubicacion: "Ubicacion",
-        col_tipo: "Tipo_Almacen"
-    })
-
-    candidata["Material"] = candidata["Material"].astype(str).str.strip()
-    candidata["Tipo_Almacen"] = candidata["Tipo_Almacen"].astype(str).str.zfill(3)
-
-    return candidata
-
-# --------------------------------------------------
-# UTILIDADES
-# --------------------------------------------------
-
-def ubicacion_en_rango(ubicacion, desde, hasta):
-    if pd.isna(ubicacion) or pd.isna(desde) or pd.isna(hasta):
-        return False
-    try:
-        return float(desde) <= float(ubicacion) <= float(hasta)
-    except Exception:
-        return str(desde) <= str(ubicacion) <= str(hasta)
+    return tp_almacen, jerarquia
 
 
-def zonas_por_ubicacion(ubicacion, mapeo):
-    zonas = []
-    for _, r in mapeo.iterrows():
-        if ubicacion_en_rango(ubicacion, r["Posición Desde"], r["Posición Hasta"]):
-            zonas.append(str(r["ZONA"]).strip())
-    return zonas
+def evaluar_normativa(row):
+    if row["ESTADO"] == 1:
+        return "Ubicación correcta según normativa"
+    if row["ESTADO"] == 6:
+        return "Ubicación válida pero no permitida para este tipo de material"
+    return "Ubicación no permitida según normativa"
 
-# --------------------------------------------------
-# AUDITORÍA NORMATIVA
-# --------------------------------------------------
 
-def auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes):
-    resultados = []
+def sugerencia_correccion(row):
+    if row["ESTADO"] == 1:
+        return "No requiere corrección"
+    if row["ESTADO"] == 6:
+        return "Reubicar en posición compatible con el tipo de almacén"
+    return "Verificar jerarquía, tipo de almacén y normativa aplicada"
 
-    for _, row in df_sap.iterrows():
-        material = row["Material"]
-        ubicacion = row["Ubicacion"]
 
-        fila_maestro = maestro[maestro["MATERIAL"] == material]
+# ----------------------------------
+# SIDEBAR
+# ----------------------------------
+st.sidebar.title("📂 Fuente de datos")
 
-        if fila_maestro.empty:
-            resultados.append(("🔴", "Material no existe en Maestro"))
-            continue
+uploaded_file = st.sidebar.file_uploader(
+    "Subir archivo MHTML actualizado",
+    type=["mhtml"]
+)
 
-        jerarquia = fila_maestro.iloc[0]["JERARQUIA"]
-        tp_alm_ctrl = fila_maestro.iloc[0]["IND TP ALM ENTRADA"]
+# ----------------------------------
+# CARGA DE DATOS
+# ----------------------------------
+if uploaded_file:
+    with open("temp.mhtml", "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    df = leer_mhtml("temp.mhtml")
+else:
+    df = leer_mhtml(MHTML_DEFAULT_PATH)
 
-        comb = combinaciones[
-            (combinaciones["TP_ALMACEN"] == tp_alm_ctrl) &
-            (combinaciones["JERRARQUIA"] == jerarquia)
-        ]
+tp_almacen, jerarquia = cargar_tablas_control()
 
-        if comb.empty:
-            resultados.append(("🔴", "No existe combinación válida Almacén + Jerarquía"))
-            continue
+# ----------------------------------
+# TRANSFORMACIONES
+# ----------------------------------
 
-        zonas_validas = set()
-        for z in comb["MAPEO_POSICIONES"]:
-            zonas_validas.update(x.strip() for x in str(z).split(","))
+# Tipo almacén → siempre 3 caracteres
+df["Tipo almacén"] = df["Tipo almacén"].astype(str).str.zfill(3)
 
-        zonas_ubic = set(zonas_por_ubicacion(ubicacion, mapeo))
+# Join con TP_ALMACEN (nombre del tipo)
+df = df.merge(
+    tp_almacen,
+    how="left",
+    on="Tipo almacén"
+)
 
-        if zonas_validas & zonas_ubic:
-            resultados.append(("🟢", "Ubicación correcta según normativa"))
-        elif zonas_ubic:
-            resultados.append(("🟡", "Ubicación válida pero no para esta combinación"))
-        else:
-            resultados.append(("🔴", "Ubicación fuera de zonas permitidas"))
+# Jerarquía → aseguramos padding con cero
+df["Jerarquia"] = df["Jerarquia"].astype(str).str.zfill(2)
 
-    df_out = df_sap.copy()
-    df_out[["ESTADO", "OBSERVACION"]] = resultados
-    
-    # Añadir nombre descriptivo de almacén
-    if mapeo_almacenes:
-        df_out["NOMBRE_ALMACEN"] = df_out["Tipo_Almacen"].map(mapeo_almacenes)
-        cols = [c for c in df_out.columns if c != "Tipo_Almacen"] + ["Tipo_Almacen"]
-        df_out = df_out[cols]
-    
-    return df_out
+df = df.merge(
+    jerarquia,
+    how="left",
+    on="Jerarquia"
+)
 
-# --------------------------------------------------
-# AUDITORÍA OPERATIVA
-# --------------------------------------------------
+# Observación normativa
+df["OBSERVACION"] = df.apply(evaluar_normativa, axis=1)
 
-def auditar_operaciones(df_sap, maestro, mapeo_almacenes):
-    resultados = []
+# Posible corrección
+df["POSIBLE_CORRECCION"] = df.apply(sugerencia_correccion, axis=1)
 
-    for _, row in df_sap.iterrows():
-        material = row["Material"]
-        tp_sap = row["Tipo_Almacen"]
+# ----------------------------------
+# LIMPIEZA DE COLUMNAS
+# ----------------------------------
+COLUMNAS_FINALES = [
+    "Texto breve de material",
+    "Ubicacion",
+    "Tipo almacén",
+    "Tipo_Almacen",          # nombre desde TP_ALMACEN
+    "Jerarquia",
+    "Jerarquía nombre",
+    "ESTADO",
+    "OBSERVACION",
+    "POSIBLE_CORRECCION"
+]
 
-        fila_maestro = maestro[maestro["MATERIAL"] == material]
+df_final = df[COLUMNAS_FINALES]
 
-        if fila_maestro.empty:
-            resultados.append(("🔴", "Material no existe en Maestro"))
-            continue
+# ----------------------------------
+# VISUALIZACIÓN
+# ----------------------------------
+st.title("📊 Auditoría normativa de almacén")
 
-        tp_maestro = fila_maestro.iloc[0]["IND TP ALM ENTRADA"]
+st.dataframe(
+    df_final,
+    use_container_width=True
+)
 
-        if tp_sap != tp_maestro:
-            resultados.append(("🔴", f"Tipo almacén SAP ({tp_sap}) ≠ Maestro ({tp_maestro})"))
-        else:
-            resultados.append(("🟢", "Datos operativos correctos"))
-
-    df_out = df_sap.copy()
-    df_out[["ESTADO_OP", "OBSERVACION_OP"]] = resultados
-    
-    # Añadir nombre descriptivo de almacén
-    if mapeo_almacenes:
-        df_out["NOMBRE_ALMACEN"] = df_out["Tipo_Almacen"].map(mapeo_almacenes)
-        cols = [c for c in df_out.columns if c != "Tipo_Almacen"] + ["Tipo_Almacen"]
-        df_out = df_out[cols]
-    
-    return df_out
-
-# --------------------------------------------------
-# UI
-# --------------------------------------------------
-
-st.title("Auditor de Almacenamiento – SAP")
-st.caption("Ley Prov. 8302 · Normativa ANMAT")
-
-maestro, combinaciones, mapeo, mapeo_almacenes = cargar_tablas_control()
-
-archivo = st.file_uploader("Subir archivo SAP (.MHTML)", type=["mhtml"])
-
-if archivo:
-    df_sap = cargar_mhtml(archivo)
-
-    tab1, tab2 = st.tabs(["🧪 Auditoría Normativa", "🛠 Auditoría Operaciones"])
-
-    with tab1:
-        df_calidad = auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes)
-        st.dataframe(df_calidad, use_container_width=True)
-        st.markdown("### Resumen")
-        st.write(df_calidad["ESTADO"].value_counts())
-
-    with tab2:
-        if st.button("Ejecutar auditoría operativa"):
-            df_op = auditar_operaciones(df_sap, maestro, mapeo_almacenes)
-            st.dataframe(df_op, use_container_width=True)
-            st.markdown("### Resumen operativo")
-            st.write(df_op["ESTADO_OP"].value_counts())
 
