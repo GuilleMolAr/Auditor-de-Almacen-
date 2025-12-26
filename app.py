@@ -16,7 +16,15 @@ st.set_page_config(page_title="Auditor de Almacén", layout="wide")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TABLAS_CONTROL_PATH = os.path.join(BASE_DIR, "tablas_control.xlsx")
-MHTML_DEFAULT_PATH = os.path.join(BASE_DIR, "auditoria_posiciones.MHTML")
+
+# Buscar automáticamente el MHTML en la carpeta
+def buscar_mhtml_en_directorio(base_dir):
+    for file in os.listdir(base_dir):
+        if file.lower().endswith(".mhtml"):
+            return os.path.join(base_dir, file)
+    return None
+
+MHTML_DEFAULT_PATH = buscar_mhtml_en_directorio(BASE_DIR)
 
 # ----------------------------------
 # FUNCIONES
@@ -30,8 +38,7 @@ def leer_mhtml(path):
         st.error("No se encontraron tablas en el archivo MHTML")
         st.stop()
 
-    df = pd.read_html(str(tables[0]))[0]
-    return df
+    return pd.read_html(str(tables[0]))[0]
 
 
 def cargar_tablas_control():
@@ -45,7 +52,6 @@ def cargar_tablas_control():
         sheet_name="JERARQUIA"
     )
 
-    # Normalizaciones
     tp_almacen["Tipo almacén"] = tp_almacen["Tipo almacén"].astype(str).str.zfill(3)
     jerarquia["Jerarquia"] = jerarquia["Jerarquia"].astype(str).str.zfill(2)
 
@@ -56,7 +62,7 @@ def evaluar_normativa(row):
     if row["ESTADO"] == 1:
         return "Ubicación correcta según normativa"
     if row["ESTADO"] == 6:
-        return "Ubicación válida pero no permitida para este tipo de material"
+        return "Ubicación válida pero no permitida para este material"
     return "Ubicación no permitida según normativa"
 
 
@@ -65,7 +71,7 @@ def sugerencia_correccion(row):
         return "No requiere corrección"
     if row["ESTADO"] == 6:
         return "Reubicar en posición compatible con el tipo de almacén"
-    return "Verificar jerarquía, tipo de almacén y normativa aplicada"
+    return "Revisar jerarquía y tipo de almacén asignado"
 
 
 # ----------------------------------
@@ -82,51 +88,35 @@ uploaded_file = st.sidebar.file_uploader(
 # CARGA DE DATOS
 # ----------------------------------
 if uploaded_file:
-    with open("temp.mhtml", "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    df = leer_mhtml("temp.mhtml")
-else:
+    df = leer_mhtml(uploaded_file)
+elif MHTML_DEFAULT_PATH:
     df = leer_mhtml(MHTML_DEFAULT_PATH)
+else:
+    st.error("No se encontró ningún archivo MHTML en el proyecto.")
+    st.stop()
 
 tp_almacen, jerarquia = cargar_tablas_control()
 
 # ----------------------------------
 # TRANSFORMACIONES
 # ----------------------------------
-
-# Tipo almacén → siempre 3 caracteres
 df["Tipo almacén"] = df["Tipo almacén"].astype(str).str.zfill(3)
-
-# Join con TP_ALMACEN (nombre del tipo)
-df = df.merge(
-    tp_almacen,
-    how="left",
-    on="Tipo almacén"
-)
-
-# Jerarquía → aseguramos padding con cero
 df["Jerarquia"] = df["Jerarquia"].astype(str).str.zfill(2)
 
-df = df.merge(
-    jerarquia,
-    how="left",
-    on="Jerarquia"
-)
+df = df.merge(tp_almacen, how="left", on="Tipo almacén")
+df = df.merge(jerarquia, how="left", on="Jerarquia")
 
-# Observación normativa
 df["OBSERVACION"] = df.apply(evaluar_normativa, axis=1)
-
-# Posible corrección
 df["POSIBLE_CORRECCION"] = df.apply(sugerencia_correccion, axis=1)
 
 # ----------------------------------
-# LIMPIEZA DE COLUMNAS
+# COLUMNAS FINALES
 # ----------------------------------
 COLUMNAS_FINALES = [
     "Texto breve de material",
     "Ubicacion",
     "Tipo almacén",
-    "Tipo_Almacen",          # nombre desde TP_ALMACEN
+    "Tipo_Almacen",
     "Jerarquia",
     "Jerarquía nombre",
     "ESTADO",
@@ -137,13 +127,10 @@ COLUMNAS_FINALES = [
 df_final = df[COLUMNAS_FINALES]
 
 # ----------------------------------
-# VISUALIZACIÓN
+# UI
 # ----------------------------------
 st.title("📊 Auditoría normativa de almacén")
+st.dataframe(df_final, use_container_width=True)
 
-st.dataframe(
-    df_final,
-    use_container_width=True
-)
 
 
