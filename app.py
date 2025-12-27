@@ -41,6 +41,18 @@ def cargar_tablas_control():
         dtype=str
     )
 
+     tp_almacen = pd.read_excel(
+        RUTA_TABLAS_CONTROL,
+        sheet_name="TP_ALMACEN",
+        dtype=str
+    )
+
+    jerarquia = pd.read_excel(
+        RUTA_TABLAS_CONTROL,
+        sheet_name="JERARQUIA",
+        dtype=str
+    )
+
     maestro["MATERIAL"] = maestro["MATERIAL"].astype(str).str.strip()
     maestro["JERARQUIA"] = maestro["JERARQUIA"].astype(str).str.zfill(15)
     maestro["IND TP ALM ENTRADA"] = maestro["IND TP ALM ENTRADA"].astype(str).str.zfill(3)
@@ -214,6 +226,7 @@ if archivo:
 
     st.markdown("### Resumen")
     st.write(df_calidad["ESTADO"].value_counts())
+
 
 
 
