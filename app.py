@@ -191,8 +191,11 @@ def auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes):
     # Añadir nombre descriptivo de almacén
     if mapeo_almacenes:
         df_out["NOMBRE_ALMACEN"] = df_out["Tipo_Almacen"].map(mapeo_almacenes)
+    
+        # Reordenamos columnas dejando Tipo_Almacen al final (como querías)
         cols = [c for c in df_out.columns if c != "Tipo_Almacen"] + ["Tipo_Almacen"]
         df_out = df_out[cols]
+
     
     return df_out
 
@@ -259,3 +262,4 @@ if archivo:
             st.dataframe(df_op, use_container_width=True)
             st.markdown("### Resumen operativo")
             st.write(df_op["ESTADO_OP"].value_counts())
+
