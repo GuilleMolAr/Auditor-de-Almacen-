@@ -2,7 +2,6 @@
 # app.py
 # Auditor de Almacén – Streamlit
 # Auditoría Normativa + Auditoría Operativa
-# Versión estable + futura compatible
 
 import streamlit as st
 import pandas as pd
@@ -17,7 +16,6 @@ from pathlib import Path
 st.set_page_config(page_title="Auditor de Almacén", layout="wide")
 
 RUTA_TABLAS_CONTROL = Path("tablas_control.xlsx")
-#(r"C:/Users/gmolar/Documents/Python/Auditor_de_almacen/control_data/tablas_control.xlsx")
 
 # --------------------------------------------------
 # CARGA TABLAS DE CONTROL
@@ -50,18 +48,10 @@ def cargar_tablas_control():
     combinaciones["TP_ALMACEN"] = combinaciones["TP_ALMACEN"].astype(str).str.zfill(3)
     combinaciones["JERRARQUIA"] = combinaciones["JERRARQUIA"].astype(str).str.zfill(15)
 
-    # Crear mapeo de Tipo_Almacen -> NOMBRE_ALMACEN
-    mapeo_almacenes = {}
-    if "TP_ALMACEN" in combinaciones.columns and "NOMBRE_ALMACEN" in combinaciones.columns:
-        mapeo_almacenes = dict(zip(
-            combinaciones["TP_ALMACEN"].str.zfill(3),
-            combinaciones["NOMBRE_ALMACEN"]
-        ))
-
-    return maestro, combinaciones, mapeo, mapeo_almacenes
+    return maestro, combinaciones, mapeo
 
 # --------------------------------------------------
-# LECTURA ARCHIVO SAP
+# LECTURA ARCHIVO SAP (.MHTML)
 # --------------------------------------------------
 
 def cargar_mhtml(file):
@@ -147,33 +137,9 @@ def zonas_por_ubicacion(ubicacion, mapeo):
 # AUDITORÍA NORMATIVA
 # --------------------------------------------------
 
-def auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes,tp_almacen):
+def auditar_calidad(df_sap, maestro, combinaciones, mapeo):
     resultados = []
 
-    # Normalizamos TP_ALMACEN
-    tp_almacen["N° Almacen"] = (
-        tp_almacen["N° Almacen"]
-        .astype(str)
-        .str.strip()
-        .str.zfill(3)
-    )
-    
-    tp_almacen["Nombre"] = tp_almacen["Nombre"].astype(str).str.strip()
-    
-    # Diccionario: { '001': 'ALMACEN CENTRAL', ... }
-    mapeo_almacenes = dict(
-        zip(tp_almacen["N° Almacen"], tp_almacen["Nombre"])
-    )
-
-    
-    df_out["Tipo_Almacen"] = (
-        df_out["Tipo_Almacen"]
-        .astype(str)
-        .str.strip()
-        .str.zfill(3)
-    )
-
-    
     for _, row in df_sap.iterrows():
         material = row["Material"]
         ubicacion = row["Ubicacion"]
@@ -211,51 +177,21 @@ def auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes,tp_al
 
     df_out = df_sap.copy()
     df_out[["ESTADO", "OBSERVACION"]] = resultados
-    
-    # Añadir nombre descriptivo de almacén
-    if mapeo_almacenes:
-        df_out["NOMBRE_ALMACEN"] = df_out["Tipo_Almacen"].map(mapeo_almacenes)
-    
-        # Reordenamos columnas dejando Tipo_Almacen al final (como querías)
-        cols = [c for c in df_out.columns if c != "Tipo_Almacen"] + ["Tipo_Almacen"]
-        df_out = df_out[cols]
 
-    
-    return df_out
+    # --------------------------------------------------
+    # MEJORA VISUAL (NO AFECTA LÓGICA)
+    # Nombre descriptivo del material
+    # --------------------------------------------------
 
-# --------------------------------------------------
-# AUDITORÍA OPERATIVA
-# --------------------------------------------------
+    mapeo_materiales = dict(
+        zip(
+            maestro["MATERIAL"].astype(str).str.strip(),
+            maestro["NOMBRE"].astype(str).str.strip()
+        )
+    )
 
-def auditar_operaciones(df_sap, maestro, mapeo_almacenes):
-    resultados = []
+    df_out["NOMBRE_MATERIAL"] = df_out["Material"].map(mapeo_materiales)
 
-    for _, row in df_sap.iterrows():
-        material = row["Material"]
-        tp_sap = row["Tipo_Almacen"]
-
-        fila_maestro = maestro[maestro["MATERIAL"] == material]
-
-        if fila_maestro.empty:
-            resultados.append(("🔴", "Material no existe en Maestro"))
-            continue
-
-        tp_maestro = fila_maestro.iloc[0]["IND TP ALM ENTRADA"]
-
-        if tp_sap != tp_maestro:
-            resultados.append(("🔴", f"Tipo almacén SAP ({tp_sap}) ≠ Maestro ({tp_maestro})"))
-        else:
-            resultados.append(("🟢", "Datos operativos correctos"))
-
-    df_out = df_sap.copy()
-    df_out[["ESTADO_OP", "OBSERVACION_OP"]] = resultados
-    
-    # Añadir nombre descriptivo de almacén
-    if mapeo_almacenes:
-        df_out["NOMBRE_ALMACEN"] = df_out["Tipo_Almacen"].map(mapeo_almacenes)
-        cols = [c for c in df_out.columns if c != "Tipo_Almacen"] + ["Tipo_Almacen"]
-        df_out = df_out[cols]
-    
     return df_out
 
 # --------------------------------------------------
@@ -265,26 +201,19 @@ def auditar_operaciones(df_sap, maestro, mapeo_almacenes):
 st.title("Auditor de Almacenamiento – SAP")
 st.caption("Ley Prov. 8302 · Normativa ANMAT")
 
-maestro, combinaciones, mapeo, mapeo_almacenes = cargar_tablas_control()
+maestro, combinaciones, mapeo = cargar_tablas_control()
 
 archivo = st.file_uploader("Subir archivo SAP (.MHTML)", type=["mhtml"])
 
 if archivo:
     df_sap = cargar_mhtml(archivo)
 
-    tab1, tab2 = st.tabs(["🧪 Auditoría Normativa", "🛠 Auditoría Operaciones"])
+    df_calidad = auditar_calidad(df_sap, maestro, combinaciones, mapeo)
 
-    with tab1:
-        df_calidad = auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes, tp_almacen)
-        st.dataframe(df_calidad, use_container_width=True)
-        st.markdown("### Resumen")
-        st.write(df_calidad["ESTADO"].value_counts())
+    st.dataframe(df_calidad, width="stretch")
 
-    with tab2:
-        if st.button("Ejecutar auditoría operativa"):
-            df_op = auditar_operaciones(df_sap, maestro, mapeo_almacenes)
-            st.dataframe(df_op, use_container_width=True)
-            st.markdown("### Resumen operativo")
-            st.write(df_op["ESTADO_OP"].value_counts())
+    st.markdown("### Resumen")
+    st.write(df_calidad["ESTADO"].value_counts())
+
 
 
