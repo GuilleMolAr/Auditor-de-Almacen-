@@ -147,9 +147,33 @@ def zonas_por_ubicacion(ubicacion, mapeo):
 # AUDITORÍA NORMATIVA
 # --------------------------------------------------
 
-def auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes):
+def auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes,tp_almacen):
     resultados = []
 
+    # Normalizamos TP_ALMACEN
+    tp_almacen["N° Almacen"] = (
+        tp_almacen["N° Almacen"]
+        .astype(str)
+        .str.strip()
+        .str.zfill(3)
+    )
+    
+    tp_almacen["Nombre"] = tp_almacen["Nombre"].astype(str).str.strip()
+    
+    # Diccionario: { '001': 'ALMACEN CENTRAL', ... }
+    mapeo_almacenes = dict(
+        zip(tp_almacen["N° Almacen"], tp_almacen["Nombre"])
+    )
+
+    
+    df_out["Tipo_Almacen"] = (
+        df_out["Tipo_Almacen"]
+        .astype(str)
+        .str.strip()
+        .str.zfill(3)
+    )
+
+    
     for _, row in df_sap.iterrows():
         material = row["Material"]
         ubicacion = row["Ubicacion"]
@@ -251,7 +275,7 @@ if archivo:
     tab1, tab2 = st.tabs(["🧪 Auditoría Normativa", "🛠 Auditoría Operaciones"])
 
     with tab1:
-        df_calidad = auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes)
+        df_calidad = auditar_calidad(df_sap, maestro, combinaciones, mapeo, mapeo_almacenes, tp_almacen)
         st.dataframe(df_calidad, use_container_width=True)
         st.markdown("### Resumen")
         st.write(df_calidad["ESTADO"].value_counts())
@@ -262,4 +286,5 @@ if archivo:
             st.dataframe(df_op, use_container_width=True)
             st.markdown("### Resumen operativo")
             st.write(df_op["ESTADO_OP"].value_counts())
+
 
